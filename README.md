@@ -1,53 +1,94 @@
 🔎 AI Research Agent
 
-Beginner-friendly single-agent research app using CrewAI, Groq GPT-OSS 120B, Groq built-in Browser Search, LiteLLM, and Streamlit.
+A beginner-friendly single-agent research application built with:
 
-API key
+CrewAI
 
-Only one secret is required:
+Groq
 
-GROQ_API_KEY
+GPT-OSS 120B
 
-No Serper API key and no .env file are required.
+Groq built-in Browser Search
+
+LiteLLM
+
+Streamlit
 
 Architecture
 
 User
-→ Streamlit
-→ One CrewAI Research Agent
-→ LiteLLM
-→ Groq GPT-OSS 120B
+  ↓
+Streamlit
+  ↓
+ONE CrewAI Research Agent
+  ↓
+LiteLLM
+  ↓
+Groq GPT-OSS 120B
+  ↓
+Research Report
 
-The agent also has a custom CrewAI web-research tool that calls Groq's built-in Browser Search using the same GROQ_API_KEY.
+The agent also has one custom CrewAI tool that calls Groq's built-in
+browser_search tool for live web research.
 
-Deployment
+API key
 
-Push these files to GitHub.
+Only one API key is required:
 
-Create a Streamlit Community Cloud app using app.py.
+GROQ_API_KEY
+
+There is no Serper API key and no OpenAI API key.
+
+There is also no .env file required.
+
+Model
+
+Groq model:
+
+openai/gpt-oss-120b
+
+CrewAI/LiteLLM model string:
+
+groq/openai/gpt-oss-120b
+
+Streamlit Cloud deployment
+
+Upload/push all project files to GitHub.
+
+Create a Streamlit Community Cloud app.
+
+Set the main file to:
+
+app.py
 
 Use Python 3.12 or 3.13.
 
-In Streamlit Cloud:
+Open:
+
 Manage app → Settings → Secrets
 
 Add:
 
 GROQ_API_KEY = "your_real_groq_api_key"
 
-Save and redeploy/reboot the app.
+Save and reboot/redeploy the app.
 
-Never put the real API key in GitHub or Python source files.
+Never commit the real API key to GitHub.
 
-Model
+Important compatibility fix
 
-openai/gpt-oss-120b
+CrewAI 1.15.x can inject a cache_breakpoint property into messages.
+Groq rejects that property.
 
-For CrewAI/LiteLLM, the model is specified as:
+This project therefore disables the CrewAI cache-breakpoint marker and
+also removes the property at the LiteLLM boundary before a request is sent
+to Groq.
 
-groq/openai/gpt-oss-120b
+The CrewAI agent also has:
 
-Dependencies
+cache=False
+
+Requirements
 
 crewai==1.15.22
 groq==1.7.0
