@@ -2,7 +2,11 @@ import os
 import streamlit as st
 from research_agent import run_research
 
-st.set_page_config(page_title="AI Research Agent", page_icon="🔎", layout="wide")
+st.set_page_config(
+    page_title="AI Research Agent",
+    page_icon="🔎",
+    layout="wide",
+)
 
 try:
     groq_key = st.secrets["GROQ_API_KEY"]
@@ -28,7 +32,11 @@ topic = st.text_area(
     height=120,
 )
 
-if st.button("🔍 Start Research", type="primary", use_container_width=True):
+if st.button(
+    "🔍 Start Research",
+    type="primary",
+    use_container_width=True,
+):
     if not topic.strip():
         st.warning("Please enter a research topic.")
     else:
