@@ -1,6 +1,8 @@
 import os
 import streamlit as st
+
 from research_agent import run_research
+
 
 st.set_page_config(
     page_title="AI Research Agent",
@@ -8,6 +10,7 @@ st.set_page_config(
     layout="wide",
 )
 
+# Read the API key only from Streamlit Cloud Secrets.
 try:
     groq_key = st.secrets["GROQ_API_KEY"]
 except KeyError:
@@ -21,9 +24,10 @@ except KeyError:
 os.environ["GROQ_API_KEY"] = groq_key
 
 st.title("🔎 AI Research Agent")
+
 st.write(
-    "Enter a research topic and the AI agent will research "
-    "it using Groq's built-in web browsing capability."
+    "Enter a research topic and the AI agent will research it "
+    "using Groq GPT-OSS 120B and Groq's built-in browser search."
 )
 
 topic = st.text_area(
