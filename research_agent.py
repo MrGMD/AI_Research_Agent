@@ -1,5 +1,40 @@
 import os
 
+# -------------------------------------------------------------------
+# CrewAI + Groq compatibility patch
+#
+# CrewAI 1.15.x can add a `cache_breakpoint` field to messages.
+# Groq rejects that field with a 400 Bad Request.
+#
+# Disable that injection before the agent executor sends messages.
+# This is a known CrewAI/Groq compatibility issue.
+# -------------------------------------------------------------------
+try:
+    import crewai.llms.cache as _crewai_cache
+
+    def _disable_cache_breakpoint(message):
+        return message
+
+    _crewai_cache.mark_cache_breakpoint = _disable_cache_breakpoint
+
+    # Some CrewAI versions import mark_cache_breakpoint directly
+    # into these executor modules, so patch those references too.
+    try:
+        import crewai.experimental.agent_executor as _agent_executor
+        _agent_executor.mark_cache_breakpoint = _disable_cache_breakpoint
+    except Exception:
+        pass
+
+    try:
+        import crewai.agents.crew_agent_executor as _crew_agent_executor
+        _crew_agent_executor.mark_cache_breakpoint = _disable_cache_breakpoint
+    except Exception:
+        pass
+
+except Exception:
+    pass
+
+
 from groq import Groq
 from pydantic import BaseModel, Field
 from crewai import Agent, Crew, Task, LLM
@@ -56,9 +91,8 @@ class GroqWebSearchTool(BaseTool):
         message = response.choices[0].message
         content = message.content or ""
 
-        # Groq may expose the executed browser-search results on the
-        # message object. Add them when available so the CrewAI agent
-        # can use the source information in its final report.
+        # Groq may expose executed browser-search results on the
+        # message object. Add them when available.
         executed_tools = getattr(message, "executed_tools", None)
 
         if executed_tools:
@@ -104,8 +138,6 @@ def run_research(topic: str) -> str:
         raise ValueError("GROQ_API_KEY is not configured.")
 
     # CrewAI uses LiteLLM for the Groq provider.
-    # The provider/model format is important:
-    # groq/openai/gpt-oss-120b
     llm = LLM(
         model="groq/openai/gpt-oss-120b",
         api_key=api_key,
@@ -113,6 +145,7 @@ def run_research(topic: str) -> str:
         max_tokens=12000,
     )
 
+    # Single CrewAI agent.
     researcher = Agent(
         role="Senior AI Research Analyst",
         goal=(
@@ -129,6 +162,7 @@ def run_research(topic: str) -> str:
         llm=llm,
         verbose=True,
         allow_delegation=False,
+        cache=False,
     )
 
     research_task = Task(
@@ -185,4 +219,5 @@ Topic:
     )
 
     result = crew.kickoff()
+
     return str(result)
