@@ -1,35 +1,79 @@
 import os
 
-# -------------------------------------------------------------------
-# CrewAI + Groq compatibility patch
+
+# ---------------------------------------------------------------------------
+# CrewAI + Groq compatibility fix
+# ---------------------------------------------------------------------------
 #
-# CrewAI 1.15.x can add a `cache_breakpoint` field to messages.
-# Groq rejects that field with a 400 Bad Request.
+# CrewAI 1.15.x can add `cache_breakpoint` to messages for its prompt-cache
+# handling. Groq's API rejects that property on messages:
 #
-# Disable that injection before the agent executor sends messages.
-# This is a known CrewAI/Groq compatibility issue.
-# -------------------------------------------------------------------
+#   property 'cache_breakpoint' is unsupported
+#
+# This is a known CrewAI issue affecting non-Anthropic providers such as
+# Groq. We disable the marker at the CrewAI level AND remove it at the final
+# LiteLLM boundary as a safety net.
+#
+# The second patch is intentionally included because some CrewAI versions
+# import the cache function into an executor module before execution.
+# ---------------------------------------------------------------------------
+
 try:
     import crewai.llms.cache as _crewai_cache
 
-    def _disable_cache_breakpoint(message):
+    def _no_cache_breakpoint(message):
         return message
 
-    _crewai_cache.mark_cache_breakpoint = _disable_cache_breakpoint
+    _crewai_cache.mark_cache_breakpoint = _no_cache_breakpoint
 
-    # Some CrewAI versions import mark_cache_breakpoint directly
-    # into these executor modules, so patch those references too.
-    try:
-        import crewai.experimental.agent_executor as _agent_executor
-        _agent_executor.mark_cache_breakpoint = _disable_cache_breakpoint
-    except Exception:
-        pass
-
+    # CrewAI's older executor.
     try:
         import crewai.agents.crew_agent_executor as _crew_agent_executor
-        _crew_agent_executor.mark_cache_breakpoint = _disable_cache_breakpoint
+
+        _crew_agent_executor.mark_cache_breakpoint = _no_cache_breakpoint
     except Exception:
         pass
+
+    # CrewAI's experimental/current executor.
+    try:
+        import crewai.experimental.agent_executor as _agent_executor
+
+        _agent_executor.mark_cache_breakpoint = _no_cache_breakpoint
+    except Exception:
+        pass
+
+except Exception:
+    pass
+
+
+# Final safety net:
+# remove cache_breakpoint immediately before LiteLLM sends the request.
+try:
+    import litellm
+
+    _original_litellm_completion = litellm.completion
+
+    def _completion_without_groq_cache_breakpoint(*args, **kwargs):
+        messages = kwargs.get("messages")
+
+        if isinstance(messages, list):
+            for message in messages:
+                if isinstance(message, dict):
+                    message.pop("cache_breakpoint", None)
+
+                    content = message.get("content")
+
+                    if isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict):
+                                block.pop("cache_breakpoint", None)
+
+        # Disable LiteLLM-side caching for this application.
+        kwargs["caching"] = False
+
+        return _original_litellm_completion(*args, **kwargs)
+
+    litellm.completion = _completion_without_groq_cache_breakpoint
 
 except Exception:
     pass
@@ -91,8 +135,7 @@ class GroqWebSearchTool(BaseTool):
         message = response.choices[0].message
         content = message.content or ""
 
-        # Groq may expose executed browser-search results on the
-        # message object. Add them when available.
+        # Groq can return executed browser-search results on the message.
         executed_tools = getattr(message, "executed_tools", None)
 
         if executed_tools:
@@ -122,11 +165,12 @@ class GroqWebSearchTool(BaseTool):
                     url = getattr(result, "url", "")
                     snippet = getattr(result, "content", "")
 
-                    content += (
-                        f"- {title}\n"
-                        f"  URL: {url}\n"
-                        f"  Summary: {snippet}\n"
-                    )
+                    if title or url or snippet:
+                        content += (
+                            f"- {title}\n"
+                            f"  URL: {url}\n"
+                            f"  Summary: {snippet}\n"
+                        )
 
         return content
 
@@ -137,7 +181,11 @@ def run_research(topic: str) -> str:
     if not api_key:
         raise ValueError("GROQ_API_KEY is not configured.")
 
-    # CrewAI uses LiteLLM for the Groq provider.
+    # CrewAI routes this through LiteLLM.
+    #
+    # IMPORTANT:
+    # `groq/` is the LiteLLM provider prefix.
+    # `openai/gpt-oss-120b` is the actual model ID on Groq.
     llm = LLM(
         model="groq/openai/gpt-oss-120b",
         api_key=api_key,
@@ -145,7 +193,7 @@ def run_research(topic: str) -> str:
         max_tokens=12000,
     )
 
-    # Single CrewAI agent.
+    # Exactly ONE CrewAI agent.
     researcher = Agent(
         role="Senior AI Research Analyst",
         goal=(
@@ -190,14 +238,23 @@ Requirements:
 Use this structure:
 
 # Research Report
+
 ## Executive Summary
+
 ## Introduction
+
 ## Background
+
 ## Key Findings
+
 ## Detailed Analysis
+
 ## Current Developments
+
 ## Challenges and Limitations
+
 ## Conclusion
+
 ## Sources
 
 Topic:
