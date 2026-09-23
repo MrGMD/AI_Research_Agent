@@ -1,95 +1,39 @@
-# 🔎 AI Research Agent
+🔎 AI Research Agent
 
-A beginner-friendly single-agent research application built with:
+Beginner-friendly single-agent research app using CrewAI, Groq GPT-OSS 120B, Groq built-in Browser Search, and Streamlit.
 
-- CrewAI
-- Groq
-- GPT-OSS 120B
-- Serper web search
-- Streamlit
+One API key only
 
-## Architecture
+GROQ_API_KEY
 
-User
-↓
-Streamlit
-↓
-One CrewAI Research Agent
-↓
-Serper Web Search
-↓
-Groq GPT-OSS 120B
-↓
-Research Report
-↓
-Streamlit
+No Serper API key and no .env file are required.
 
-## Project Structure
+Architecture
 
-```text
-ai-research-agent/
-│
-├── .streamlit/
-│   └── secrets.toml.example
-│
-├── app.py
-├── research_agent.py
-├── requirements.txt
-├── .gitignore
-└── README.md
-```
+User → Streamlit → One CrewAI Research Agent → Groq Web Research → Groq Browser Search → Research Report
 
-## Deployment
+Deployment
 
-This project is designed to be deployed directly to Streamlit Community Cloud through GitHub.
+Push these files to GitHub.
 
-No local `.env` file is required.
+Create the Streamlit Community Cloud app with app.py.
 
-### 1. Push this repository to GitHub
+Select Python 3.13. CrewAI 1.15.22 requires Python >=3.10 and <3.14.
 
-Upload the project files to a GitHub repository.
+In Manage app → Settings → Secrets, add:
 
-### 2. Create the Streamlit app
-
-In Streamlit Community Cloud, create a new app and select:
-
-- Repository: your GitHub repository
-- Branch: main
-- Main file: `app.py`
-
-### 3. Add Streamlit Secrets
-
-Open:
-
-`App → Settings → Secrets`
-
-Add:
-
-```toml
 GROQ_API_KEY = "your_real_groq_api_key"
-SERPER_API_KEY = "your_real_serper_api_key"
-```
 
-Save the secrets and deploy/reboot the app.
+Save and deploy/reboot.
 
-## Important
+Never put the real API key in GitHub or Python source files.
 
-Never commit your real API keys to GitHub.
+Model
 
-The included `.streamlit/secrets.toml.example` contains placeholders only.
+openai/gpt-oss-120b
 
-## LLM
+Dependencies
 
-The application uses:
-
-```text
-groq/openai/gpt-oss-120b
-```
-
-## Search
-
-The research agent uses CrewAI's `SerperDevTool`, which requires:
-
-```text
-SERPER_API_KEY
-```
+crewai==1.15.22
+groq==1.7.0
+streamlit==1.64.0
