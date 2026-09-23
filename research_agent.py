@@ -23,9 +23,12 @@ class GroqWebSearchTool(BaseTool):
     args_schema: type[BaseModel] = GroqWebSearchInput
 
     def _run(self, query: str) -> str:
-        client = Groq(
-            api_key=os.environ["GROQ_API_KEY"]
-        )
+        api_key = os.environ.get("GROQ_API_KEY")
+
+        if not api_key:
+            raise ValueError("GROQ_API_KEY is not configured.")
+
+        client = Groq(api_key=api_key)
 
         response = client.chat.completions.create(
             model="openai/gpt-oss-120b",
@@ -33,7 +36,7 @@ class GroqWebSearchTool(BaseTool):
                 {
                     "role": "system",
                     "content": (
-                        "You are a web research assistant. Search the web "
+                        "You are a web research assistant. Search the live web "
                         "and return factual findings with source information. "
                         "Prefer reliable, primary, academic, government, "
                         "and reputable news sources when appropriate."
@@ -44,11 +47,7 @@ class GroqWebSearchTool(BaseTool):
                     "content": query,
                 },
             ],
-            tools=[
-                {
-                    "type": "browser_search"
-                }
-            ],
+            tools=[{"type": "browser_search"}],
             tool_choice="required",
             temperature=0.2,
             max_completion_tokens=8000,
@@ -57,12 +56,10 @@ class GroqWebSearchTool(BaseTool):
         message = response.choices[0].message
         content = message.content or ""
 
-        # Include web-search results when they are returned by Groq.
-        executed_tools = getattr(
-            message,
-            "executed_tools",
-            None,
-        )
+        # Groq may expose the executed browser-search results on the
+        # message object. Add them when available so the CrewAI agent
+        # can use the source information in its final report.
+        executed_tools = getattr(message, "executed_tools", None)
 
         if executed_tools:
             content += "\n\n## Web Search Sources\n"
@@ -87,23 +84,9 @@ class GroqWebSearchTool(BaseTool):
                     continue
 
                 for result in results:
-                    title = getattr(
-                        result,
-                        "title",
-                        "",
-                    )
-
-                    url = getattr(
-                        result,
-                        "url",
-                        "",
-                    )
-
-                    snippet = getattr(
-                        result,
-                        "content",
-                        "",
-                    )
+                    title = getattr(result, "title", "")
+                    url = getattr(result, "url", "")
+                    snippet = getattr(result, "content", "")
 
                     content += (
                         f"- {title}\n"
@@ -115,18 +98,21 @@ class GroqWebSearchTool(BaseTool):
 
 
 def run_research(topic: str) -> str:
+    api_key = os.environ.get("GROQ_API_KEY")
 
-    # CrewAI communicates with Groq through its
-    # OpenAI-compatible API endpoint.
+    if not api_key:
+        raise ValueError("GROQ_API_KEY is not configured.")
+
+    # CrewAI uses LiteLLM for the Groq provider.
+    # The provider/model format is important:
+    # groq/openai/gpt-oss-120b
     llm = LLM(
-        model="openai/gpt-oss-120b",
-        api_key=os.environ["GROQ_API_KEY"],
-        base_url="https://api.groq.com/openai/v1",
+        model="groq/openai/gpt-oss-120b",
+        api_key=api_key,
         temperature=0.2,
         max_tokens=12000,
     )
 
-    # Single CrewAI agent.
     researcher = Agent(
         role="Senior AI Research Analyst",
         goal=(
@@ -139,9 +125,7 @@ def run_research(topic: str) -> str:
             "findings, and clearly separate facts from interpretation. "
             "You never invent sources or unsupported claims."
         ),
-        tools=[
-            GroqWebSearchTool()
-        ],
+        tools=[GroqWebSearchTool()],
         llm=llm,
         verbose=True,
         allow_delegation=False,
@@ -157,7 +141,6 @@ You MUST use the Groq Web Research tool to search the live web
 before preparing the report.
 
 Requirements:
-
 1. Use multiple relevant sources.
 2. Prefer reliable and authoritative sources.
 3. Prefer recent information when the topic requires it.
@@ -173,27 +156,17 @@ Requirements:
 Use this structure:
 
 # Research Report
-
 ## Executive Summary
-
 ## Introduction
-
 ## Background
-
 ## Key Findings
-
 ## Detailed Analysis
-
 ## Current Developments
-
 ## Challenges and Limitations
-
 ## Conclusion
-
 ## Sources
 
 Topic:
-
 {topic}
 """,
         expected_output=(
@@ -205,17 +178,11 @@ Topic:
         agent=researcher,
     )
 
-    # One Crew containing one agent and one task.
     crew = Crew(
-        agents=[
-            researcher
-        ],
-        tasks=[
-            research_task
-        ],
+        agents=[researcher],
+        tasks=[research_task],
         verbose=True,
     )
 
     result = crew.kickoff()
-
     return str(result)
