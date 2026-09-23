@@ -1,18 +1,76 @@
 import os
 
+from groq import Groq
+from pydantic import BaseModel, Field
 from crewai import Agent, Crew, Task, LLM
-from crewai_tools import SerperDevTool
+from crewai.tools import BaseTool
+
+
+class GroqWebSearchInput(BaseModel):
+    query: str = Field(
+        ...,
+        description="The research question or search query to investigate.",
+    )
+
+
+class GroqWebSearchTool(BaseTool):
+    name: str = "Groq Web Research"
+    description: str = (
+        "Search the live web using Groq's built-in browser search. "
+        "Use this tool whenever current, factual, or source-based "
+        "information is needed."
+    )
+    args_schema: type[BaseModel] = GroqWebSearchInput
+
+    def _run(self, query: str) -> str:
+        client = Groq(api_key=os.environ["GROQ_API_KEY"])
+
+        response = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a web research assistant. Search the web "
+                        "and return factual findings with source information. "
+                        "Prefer reliable, primary, academic, government, "
+                        "and reputable news sources when appropriate."
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+            tools=[{"type": "browser_search"}],
+            tool_choice="required",
+            temperature=0.2,
+            max_completion_tokens=8000,
+        )
+
+        message = response.choices[0].message
+        content = message.content or ""
+
+        executed_tools = getattr(message, "executed_tools", None)
+        if executed_tools:
+            content += "\n\n## Web Search Sources\n"
+            for tool_result in executed_tools:
+                search_results = getattr(tool_result, "search_results", None)
+                if not search_results:
+                    continue
+                results = getattr(search_results, "results", None)
+                if results:
+                    for result in results:
+                        title = getattr(result, "title", "")
+                        url = getattr(result, "url", "")
+                        snippet = getattr(result, "content", "")
+                        content += (
+                            f"- {title}\n"
+                            f"  URL: {url}\n"
+                            f"  Summary: {snippet}\n"
+                        )
+
+        return content
 
 
 def run_research(topic: str) -> str:
-    """
-    Run the single-agent research workflow.
-    """
-
-    # -----------------------------------------
-    # 1. Configure Groq LLM
-    # -----------------------------------------
-
     llm = LLM(
         model="groq/openai/gpt-oss-120b",
         api_key=os.environ["GROQ_API_KEY"],
@@ -21,111 +79,70 @@ def run_research(topic: str) -> str:
         max_tokens=12000,
     )
 
-    # -----------------------------------------
-    # 2. Create web search tool
-    # -----------------------------------------
-
-    search_tool = SerperDevTool(
-        n_results=10
-    )
-
-    # -----------------------------------------
-    # 3. Create ONE CrewAI agent
-    # -----------------------------------------
-
     researcher = Agent(
         role="Senior AI Research Analyst",
-
         goal=(
-            "Research the user's topic using reliable and "
-            "relevant web sources and produce an accurate, "
-            "well-structured research report."
+            "Research the user's topic thoroughly using reliable web "
+            "sources and produce an accurate, well-structured research report."
         ),
-
         backstory=(
-            "You are an experienced research analyst who "
-            "specializes in finding, analyzing, and organizing "
-            "information from multiple sources. You carefully "
-            "distinguish facts from opinions and avoid making "
-            "unsupported claims."
+            "You are an experienced research analyst. You gather information "
+            "from multiple sources, compare evidence, identify important "
+            "findings, and clearly separate facts from interpretation. "
+            "You never invent sources or unsupported claims."
         ),
-
-        tools=[search_tool],
-
+        tools=[GroqWebSearchTool()],
         llm=llm,
-
         verbose=True,
-
         allow_delegation=False,
     )
 
-    # -----------------------------------------
-    # 4. Create research task
-    # -----------------------------------------
-
     research_task = Task(
         description=f"""
-        Conduct thorough research on this topic:
+        Research the following topic:
 
         "{topic}"
 
-        Research requirements:
+        You MUST use the Groq Web Research tool to search the live web
+        before preparing the report.
 
-        1. Find relevant and reliable sources.
-        2. Use multiple sources rather than relying on one source.
+        Requirements:
+        1. Use multiple relevant sources.
+        2. Prefer reliable and authoritative sources.
         3. Prefer recent information when the topic requires it.
         4. Identify the most important facts and findings.
-        5. Compare information from different sources when useful.
-        6. Avoid unsupported claims.
-        7. Clearly distinguish facts, analysis, and opinions.
+        5. Compare sources where useful.
+        6. Do not make unsupported claims.
+        7. Distinguish factual information from interpretation.
         8. Include important dates, statistics, organizations,
            people, or developments when relevant.
-        9. Do not invent sources or citations.
-        10. Provide source names and URLs at the end.
+        9. Never invent a source or URL.
+        10. Include source names and URLs available from the research tool.
 
-        Produce the final report using this structure:
+        Use this structure:
 
         # Research Report
-
         ## Executive Summary
-
         ## Introduction
-
         ## Background
-
         ## Key Findings
-
         ## Detailed Analysis
-
         ## Current Developments
-
         ## Challenges and Limitations
-
         ## Conclusion
-
         ## Sources
 
-        IMPORTANT:
-        - Use the web search tool before writing the report.
-        - Do not fabricate information.
-        - Do not fabricate URLs.
-        - Base factual claims on information found during research.
+        Topic:
+        {topic}
         """,
-
         expected_output=(
-            "A professional research report containing an "
-            "executive summary, introduction, background, "
-            "key findings, detailed analysis, current "
-            "developments, challenges and limitations, "
-            "conclusion, and source names with URLs."
+            "A detailed research report based on live web research, "
+            "with an executive summary, introduction, background, key "
+            "findings, detailed analysis, current developments, "
+            "challenges and limitations, conclusion, and sources."
         ),
-
         agent=researcher,
     )
-
-    # -----------------------------------------
-    # 5. Create Crew
-    # -----------------------------------------
 
     crew = Crew(
         agents=[researcher],
@@ -133,10 +150,5 @@ def run_research(topic: str) -> str:
         verbose=True,
     )
 
-    # -----------------------------------------
-    # 6. Run the research crew
-    # -----------------------------------------
-
     result = crew.kickoff()
-
     return str(result)
