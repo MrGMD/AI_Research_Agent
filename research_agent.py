@@ -1,22 +1,17 @@
 import os
 
+from groq import Groq
+from crewai import Agent, Crew, Task, BaseLLM
 
-# ---------------------------------------------------------------------------
+
+# ============================================================================
 # CrewAI + Groq compatibility fix
-# ---------------------------------------------------------------------------
+# ============================================================================
 #
-# CrewAI 1.15.x can add `cache_breakpoint` to messages for its prompt-cache
-# handling. Groq's API rejects that property on messages:
-#
-#   property 'cache_breakpoint' is unsupported
-#
-# This is a known CrewAI issue affecting non-Anthropic providers such as
-# Groq. We disable the marker at the CrewAI level AND remove it at the final
-# LiteLLM boundary as a safety net.
-#
-# The second patch is intentionally included because some CrewAI versions
-# import the cache function into an executor module before execution.
-# ---------------------------------------------------------------------------
+# CrewAI can add `cache_breakpoint` to messages.
+# Groq does not accept that property.
+# We remove it before sending the request.
+# ============================================================================
 
 try:
     import crewai.llms.cache as _crewai_cache
@@ -26,7 +21,6 @@ try:
 
     _crewai_cache.mark_cache_breakpoint = _no_cache_breakpoint
 
-    # CrewAI's older executor.
     try:
         import crewai.agents.crew_agent_executor as _crew_agent_executor
 
@@ -34,7 +28,6 @@ try:
     except Exception:
         pass
 
-    # CrewAI's experimental/current executor.
     try:
         import crewai.experimental.agent_executor as _agent_executor
 
@@ -46,102 +39,149 @@ except Exception:
     pass
 
 
-# Final safety net:
-# remove cache_breakpoint immediately before LiteLLM sends the request.
-try:
-    import litellm
+# ============================================================================
+# Custom Groq LLM for CrewAI
+# ============================================================================
+#
+# This keeps CrewAI as the agent framework but sends the actual LLM request
+# directly to Groq.
+#
+# IMPORTANT:
+# - ONE CrewAI agent
+# - ONE Groq API request from our application
+# - GPT-OSS 120B
+# - Native Groq browser_search
+# - Low reasoning effort
+# - No separate web-search model
+# - No Serper
+# - No Tavily
+# - No second API key
+# ============================================================================
 
-    _original_litellm_completion = litellm.completion
+class GroqNativeLLM(BaseLLM):
 
-    def _completion_without_groq_cache_breakpoint(*args, **kwargs):
-        messages = kwargs.get("messages")
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "openai/gpt-oss-120b",
+        temperature: float = 0.2,
+        max_completion_tokens: int = 3500,
+    ):
 
-        if isinstance(messages, list):
-            for message in messages:
-                if isinstance(message, dict):
-                    message.pop("cache_breakpoint", None)
+        super().__init__(
+            model=model,
+            temperature=temperature,
+        )
 
-                    content = message.get("content")
+        self.api_key = api_key
+        self.model = model
+        self.max_completion_tokens = max_completion_tokens
 
-                    if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict):
-                                block.pop("cache_breakpoint", None)
+        self.client = Groq(
+            api_key=api_key
+        )
 
-        # Disable LiteLLM-side caching for this application.
-        kwargs["caching"] = False
+    def call(
+        self,
+        messages,
+        tools=None,
+        callbacks=None,
+        available_functions=None,
+        **kwargs,
+    ):
 
-        return _original_litellm_completion(*args, **kwargs)
+        # ---------------------------------------------------------------
+        # Convert CrewAI messages into normal Groq messages.
+        # ---------------------------------------------------------------
 
-    litellm.completion = _completion_without_groq_cache_breakpoint
-
-except Exception:
-    pass
-
-
-from groq import Groq
-from pydantic import BaseModel, Field
-from crewai import Agent, Crew, Task, LLM
-from crewai.tools import BaseTool
-
-
-class GroqWebSearchInput(BaseModel):
-    query: str = Field(
-        ...,
-        description="The research question or search query to investigate.",
-    )
-
-
-class GroqWebSearchTool(BaseTool):
-    name: str = "Groq Web Research"
-    description: str = (
-        "Search the live web using Groq's built-in browser search. "
-        "Use this tool whenever current, factual, or source-based "
-        "information is needed."
-    )
-    args_schema: type[BaseModel] = GroqWebSearchInput
-
-    def _run(self, query: str) -> str:
-        api_key = os.environ.get("GROQ_API_KEY")
-
-        if not api_key:
-            raise ValueError("GROQ_API_KEY is not configured.")
-
-        client = Groq(api_key=api_key)
-
-        response = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a web research assistant. Search the live web "
-                        "and return factual findings with source information. "
-                        "Prefer reliable, primary, academic, government, "
-                        "and reputable news sources when appropriate."
-                    ),
-                },
+        if isinstance(messages, str):
+            messages = [
                 {
                     "role": "user",
-                    "content": query,
-                },
+                    "content": messages,
+                }
+            ]
+
+        clean_messages = []
+
+        for message in messages:
+
+            if not isinstance(message, dict):
+                continue
+
+            role = message.get(
+                "role",
+                "user",
+            )
+
+            content = message.get(
+                "content",
+                "",
+            )
+
+            # Remove CrewAI-only cache information.
+            message_copy = {
+                "role": role,
+                "content": content,
+            }
+
+            clean_messages.append(
+                message_copy
+            )
+
+        # ---------------------------------------------------------------
+        # Groq native browser search.
+        #
+        # Groq performs the search/tool loop server-side.
+        # ---------------------------------------------------------------
+
+        response = self.client.chat.completions.create(
+
+            model=self.model,
+
+            messages=clean_messages,
+
+            tools=[
+                {
+                    "type": "browser_search"
+                }
             ],
-            tools=[{"type": "browser_search"}],
+
+            # Force the agent to perform web research.
             tool_choice="required",
-            temperature=0.2,
-            max_completion_tokens=8000,
+
+            # Low reasoning = fewer reasoning tokens.
+            reasoning_effort="low",
+
+            # Do not return the internal reasoning field.
+            include_reasoning=False,
+
+            temperature=self.temperature,
+
+            # Keep the final answer controlled.
+            max_completion_tokens=self.max_completion_tokens,
         )
 
         message = response.choices[0].message
+
         content = message.content or ""
 
-        # Groq can return executed browser-search results on the message.
-        executed_tools = getattr(message, "executed_tools", None)
+        # ---------------------------------------------------------------
+        # Add source information returned by Groq.
+        # ---------------------------------------------------------------
+
+        executed_tools = getattr(
+            message,
+            "executed_tools",
+            None,
+        )
 
         if executed_tools:
-            content += "\n\n## Web Search Sources\n"
+
+            source_lines = []
 
             for tool_result in executed_tools:
+
                 search_results = getattr(
                     tool_result,
                     "search_results",
@@ -161,119 +201,217 @@ class GroqWebSearchTool(BaseTool):
                     continue
 
                 for result in results:
-                    title = getattr(result, "title", "")
-                    url = getattr(result, "url", "")
-                    snippet = getattr(result, "content", "")
 
-                    if title or url or snippet:
-                        content += (
-                            f"- {title}\n"
-                            f"  URL: {url}\n"
-                            f"  Summary: {snippet}\n"
+                    title = getattr(
+                        result,
+                        "title",
+                        "",
+                    )
+
+                    url = getattr(
+                        result,
+                        "url",
+                        "",
+                    )
+
+                    if title and url:
+
+                        source_lines.append(
+                            f"- [{title}]({url})"
                         )
+
+            if source_lines:
+
+                content += (
+                    "\n\n## Sources\n\n"
+                    + "\n".join(
+                        source_lines
+                    )
+                )
 
         return content
 
+    def supports_function_calling(self) -> bool:
+        return False
+
+    def get_context_window_size(self) -> int:
+        return 131072
+
+
+# ============================================================================
+# Main Research Function
+# ============================================================================
 
 def run_research(topic: str) -> str:
-    api_key = os.environ.get("GROQ_API_KEY")
 
-    if not api_key:
-        raise ValueError("GROQ_API_KEY is not configured.")
-
-    # CrewAI routes this through LiteLLM.
-    #
-    # IMPORTANT:
-    # `groq/` is the LiteLLM provider prefix.
-    # `openai/gpt-oss-120b` is the actual model ID on Groq.
-    llm = LLM(
-        model="groq/openai/gpt-oss-120b",
-        api_key=api_key,
-        temperature=0.2,
-        max_tokens=12000,
+    api_key = os.environ.get(
+        "GROQ_API_KEY"
     )
 
-    # Exactly ONE CrewAI agent.
+    if not api_key:
+
+        raise ValueError(
+            "GROQ_API_KEY is not configured."
+        )
+
+    # ------------------------------------------------------------------------
+    # ONE GPT-OSS 120B LLM
+    #
+    # Reduced output size to control token usage.
+    # ------------------------------------------------------------------------
+
+    llm = GroqNativeLLM(
+
+        api_key=api_key,
+
+        model="openai/gpt-oss-120b",
+
+        temperature=0.2,
+
+        max_completion_tokens=3500,
+    )
+
+    # ------------------------------------------------------------------------
+    # EXACTLY ONE CREWAI AGENT
+    #
+    # No custom web-search tool.
+    # Groq itself provides browser search.
+    # ------------------------------------------------------------------------
+
     researcher = Agent(
+
         role="Senior AI Research Analyst",
+
         goal=(
-            "Research the user's topic thoroughly using reliable web "
-            "sources and produce an accurate, well-structured research report."
+            "Research the user's topic using reliable current web sources "
+            "and produce an accurate, concise research report."
         ),
+
         backstory=(
-            "You are an experienced research analyst. You gather information "
-            "from multiple sources, compare evidence, identify important "
-            "findings, and clearly separate facts from interpretation. "
+            "You are an experienced research analyst. "
+            "You investigate topics using reliable web sources, "
+            "compare important evidence, and clearly distinguish "
+            "facts from interpretation. "
             "You never invent sources or unsupported claims."
         ),
-        tools=[GroqWebSearchTool()],
+
         llm=llm,
-        verbose=True,
+
+        # No local tools.
+        tools=[],
+
+        verbose=False,
+
         allow_delegation=False,
+
         cache=False,
     )
 
+    # ------------------------------------------------------------------------
+    # SINGLE RESEARCH TASK
+    # ------------------------------------------------------------------------
+
     research_task = Task(
+
         description=f"""
-Research the following topic:
+Research this topic:
 
 "{topic}"
 
-You MUST use the Groq Web Research tool to search the live web
-before preparing the report.
+IMPORTANT:
 
-Requirements:
-1. Use multiple relevant sources.
-2. Prefer reliable and authoritative sources.
-3. Prefer recent information when the topic requires it.
-4. Identify the most important facts and findings.
-5. Compare sources where useful.
-6. Do not make unsupported claims.
-7. Distinguish factual information from interpretation.
-8. Include important dates, statistics, organizations,
-   people, or developments when relevant.
-9. Never invent a source or URL.
-10. Include source names and URLs available from the research tool.
+Use the built-in web search available through the Groq model.
 
-Use this structure:
+Keep the research focused and token-efficient.
+
+Use only the most relevant sources needed to answer the topic.
+
+Prefer:
+- official sources
+- academic sources
+- government sources
+- reputable organizations
+- reputable news sources
+
+Do not perform unnecessary searches.
+
+Do not repeat the same information.
+
+Produce a concise but useful research report.
+
+Structure:
 
 # Research Report
 
 ## Executive Summary
 
+Give a short summary of the most important findings.
+
 ## Introduction
 
-## Background
+Briefly introduce the topic.
 
 ## Key Findings
 
+List the most important factual findings.
+
 ## Detailed Analysis
+
+Explain the findings clearly.
 
 ## Current Developments
 
-## Challenges and Limitations
+Include recent developments when relevant.
+
+## Limitations
+
+Mention important limitations or uncertainty.
 
 ## Conclusion
 
+Give a concise conclusion.
+
 ## Sources
 
+List the important sources used.
+
+Do not invent sources or URLs.
+
 Topic:
+
 {topic}
 """,
+
         expected_output=(
-            "A detailed research report based on live web research, "
-            "with an executive summary, introduction, background, "
-            "key findings, detailed analysis, current developments, "
-            "challenges and limitations, conclusion, and sources."
+            "A concise research report based on live web research, "
+            "including an executive summary, introduction, key findings, "
+            "analysis, current developments, limitations, conclusion, "
+            "and sources."
         ),
+
         agent=researcher,
     )
 
+    # ------------------------------------------------------------------------
+    # ONE CREW
+    # ------------------------------------------------------------------------
+
     crew = Crew(
-        agents=[researcher],
-        tasks=[research_task],
-        verbose=True,
+
+        agents=[
+            researcher
+        ],
+
+        tasks=[
+            research_task
+        ],
+
+        verbose=False,
     )
+
+    # ------------------------------------------------------------------------
+    # EXECUTE
+    # ------------------------------------------------------------------------
 
     result = crew.kickoff()
 
