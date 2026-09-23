@@ -23,7 +23,9 @@ class GroqWebSearchTool(BaseTool):
     args_schema: type[BaseModel] = GroqWebSearchInput
 
     def _run(self, query: str) -> str:
-        client = Groq(api_key=os.environ["GROQ_API_KEY"])
+        client = Groq(
+            api_key=os.environ["GROQ_API_KEY"]
+        )
 
         response = client.chat.completions.create(
             model="openai/gpt-oss-120b",
@@ -37,9 +39,16 @@ class GroqWebSearchTool(BaseTool):
                         "and reputable news sources when appropriate."
                     ),
                 },
-                {"role": "user", "content": query},
+                {
+                    "role": "user",
+                    "content": query,
+                },
             ],
-            tools=[{"type": "browser_search"}],
+            tools=[
+                {
+                    "type": "browser_search"
+                }
+            ],
             tool_choice="required",
             temperature=0.2,
             max_completion_tokens=8000,
@@ -48,37 +57,76 @@ class GroqWebSearchTool(BaseTool):
         message = response.choices[0].message
         content = message.content or ""
 
-        executed_tools = getattr(message, "executed_tools", None)
+        # Include web-search results when they are returned by Groq.
+        executed_tools = getattr(
+            message,
+            "executed_tools",
+            None,
+        )
+
         if executed_tools:
             content += "\n\n## Web Search Sources\n"
+
             for tool_result in executed_tools:
-                search_results = getattr(tool_result, "search_results", None)
+                search_results = getattr(
+                    tool_result,
+                    "search_results",
+                    None,
+                )
+
                 if not search_results:
                     continue
-                results = getattr(search_results, "results", None)
-                if results:
-                    for result in results:
-                        title = getattr(result, "title", "")
-                        url = getattr(result, "url", "")
-                        snippet = getattr(result, "content", "")
-                        content += (
-                            f"- {title}\n"
-                            f"  URL: {url}\n"
-                            f"  Summary: {snippet}\n"
-                        )
+
+                results = getattr(
+                    search_results,
+                    "results",
+                    None,
+                )
+
+                if not results:
+                    continue
+
+                for result in results:
+                    title = getattr(
+                        result,
+                        "title",
+                        "",
+                    )
+
+                    url = getattr(
+                        result,
+                        "url",
+                        "",
+                    )
+
+                    snippet = getattr(
+                        result,
+                        "content",
+                        "",
+                    )
+
+                    content += (
+                        f"- {title}\n"
+                        f"  URL: {url}\n"
+                        f"  Summary: {snippet}\n"
+                    )
 
         return content
 
 
 def run_research(topic: str) -> str:
+
+    # CrewAI communicates with Groq through its
+    # OpenAI-compatible API endpoint.
     llm = LLM(
-        model="groq/openai/gpt-oss-120b",
+        model="openai/gpt-oss-120b",
         api_key=os.environ["GROQ_API_KEY"],
         base_url="https://api.groq.com/openai/v1",
         temperature=0.2,
         max_tokens=12000,
     )
 
+    # Single CrewAI agent.
     researcher = Agent(
         role="Senior AI Research Analyst",
         goal=(
@@ -91,7 +139,9 @@ def run_research(topic: str) -> str:
             "findings, and clearly separate facts from interpretation. "
             "You never invent sources or unsupported claims."
         ),
-        tools=[GroqWebSearchTool()],
+        tools=[
+            GroqWebSearchTool()
+        ],
         llm=llm,
         verbose=True,
         allow_delegation=False,
@@ -99,56 +149,73 @@ def run_research(topic: str) -> str:
 
     research_task = Task(
         description=f"""
-        Research the following topic:
+Research the following topic:
 
-        "{topic}"
+"{topic}"
 
-        You MUST use the Groq Web Research tool to search the live web
-        before preparing the report.
+You MUST use the Groq Web Research tool to search the live web
+before preparing the report.
 
-        Requirements:
-        1. Use multiple relevant sources.
-        2. Prefer reliable and authoritative sources.
-        3. Prefer recent information when the topic requires it.
-        4. Identify the most important facts and findings.
-        5. Compare sources where useful.
-        6. Do not make unsupported claims.
-        7. Distinguish factual information from interpretation.
-        8. Include important dates, statistics, organizations,
-           people, or developments when relevant.
-        9. Never invent a source or URL.
-        10. Include source names and URLs available from the research tool.
+Requirements:
 
-        Use this structure:
+1. Use multiple relevant sources.
+2. Prefer reliable and authoritative sources.
+3. Prefer recent information when the topic requires it.
+4. Identify the most important facts and findings.
+5. Compare sources where useful.
+6. Do not make unsupported claims.
+7. Distinguish factual information from interpretation.
+8. Include important dates, statistics, organizations,
+   people, or developments when relevant.
+9. Never invent a source or URL.
+10. Include source names and URLs available from the research tool.
 
-        # Research Report
-        ## Executive Summary
-        ## Introduction
-        ## Background
-        ## Key Findings
-        ## Detailed Analysis
-        ## Current Developments
-        ## Challenges and Limitations
-        ## Conclusion
-        ## Sources
+Use this structure:
 
-        Topic:
-        {topic}
-        """,
+# Research Report
+
+## Executive Summary
+
+## Introduction
+
+## Background
+
+## Key Findings
+
+## Detailed Analysis
+
+## Current Developments
+
+## Challenges and Limitations
+
+## Conclusion
+
+## Sources
+
+Topic:
+
+{topic}
+""",
         expected_output=(
             "A detailed research report based on live web research, "
-            "with an executive summary, introduction, background, key "
-            "findings, detailed analysis, current developments, "
+            "with an executive summary, introduction, background, "
+            "key findings, detailed analysis, current developments, "
             "challenges and limitations, conclusion, and sources."
         ),
         agent=researcher,
     )
 
+    # One Crew containing one agent and one task.
     crew = Crew(
-        agents=[researcher],
-        tasks=[research_task],
+        agents=[
+            researcher
+        ],
+        tasks=[
+            research_task
+        ],
         verbose=True,
     )
 
     result = crew.kickoff()
+
     return str(result)
